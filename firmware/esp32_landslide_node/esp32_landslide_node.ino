@@ -38,7 +38,7 @@ const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 //
 // Or Local Node.js Server:
 // "http://YOUR_SERVER_IP:5000/api/sensor-data"
-const char* DASHBOARD_URL = "https://YOUR-PROJECT-ID-default-rtdb.firebaseio.com/landslide/latest.json";
+const char* DASHBOARD_URL = "https://landslide-detection-33787-default-rtdb.firebaseio.com/landslide/latest.json";
 const char* API_KEY       = ""; // Optional X-API-Key or Firebase Auth Token
 
 // =============================================================================

@@ -1,12 +1,10 @@
-﻿/**
+/**
  * IIT Bombay Landslide Early-Warning Dashboard
  * Client-Side Configuration (Zero-Server Architecture)
  */
 window.LANDSLIDE_CONFIG = {
-  // Set your Firebase Realtime Database URL here:
-  // e.g., 'https://<your-project>-default-rtdb.firebaseio.com'
-  // When empty, the dashboard seamlessly activates Realistic Simulation Mode so you can demo immediately.
-  FIREBASE_DATABASE_URL: '',
+  // Firebase Realtime Database URL
+  FIREBASE_DATABASE_URL: 'https://landslide-detection-33787-default-rtdb.firebaseio.com',
 
   // Default Monitoring Site Coordinates (IIT Bombay Geotechnical site)
   SITE_COORDINATES: {
