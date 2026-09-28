@@ -30,8 +30,16 @@
 // =============================================================================
 const char* WIFI_SSID     = "YOUR_WIFI_NAME";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-const char* DASHBOARD_URL = "http://YOUR_SERVER_IP:5000/api/sensor-data";
-const char* API_KEY       = ""; // Optional X-API-Key
+
+// BACKEND DESTINATION:
+// Method 1 (Recommended - Zero-Server Cloud Architecture):
+// Set to your Firebase Realtime Database URL (ending in /landslide/latest.json):
+// e.g. "https://YOUR-PROJECT-ID-default-rtdb.firebaseio.com/landslide/latest.json"
+//
+// Or Local Node.js Server:
+// "http://YOUR_SERVER_IP:5000/api/sensor-data"
+const char* DASHBOARD_URL = "https://YOUR-PROJECT-ID-default-rtdb.firebaseio.com/landslide/latest.json";
+const char* API_KEY       = ""; // Optional X-API-Key or Firebase Auth Token
 
 // =============================================================================
 // PIN DEFINITIONS
@@ -397,8 +405,13 @@ void sendDashboard() {
   json += "\"uptime_ms\":" + String(millis());
   json += "}";
 
-  Serial.println("Transmitting telemetry to dashboard...");
-  int httpCode = http.POST(json);
+  Serial.println("Transmitting telemetry to dashboard / cloud...");
+  int httpCode = 0;
+  if (url.indexOf("firebaseio.com") >= 0 || url.endsWith(".json")) {
+    httpCode = http.PUT(json);
+  } else {
+    httpCode = http.POST(json);
+  }
   Serial.printf("HTTP Response code: %d\n", httpCode);
 
   if (httpCode > 0) {

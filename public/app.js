@@ -71,6 +71,11 @@
     warningCycleIndex: 0,
     warningCycleTimer: null,
     warningSnoozed: false,
+    latestHardwareReading: null,
+    lastHardwareReceivedAt: null,
+    latestWeather: null,
+    localAlertLog: [],
+    firebaseConnected: false,
     demo: {
       isOpen: false,
       isStreaming: false,
@@ -435,17 +440,378 @@
   };
 
   // =========================================================================
+  // ZERO-SERVER CLOUD & CLIENT GEOTECHNICAL ENGINE
+  // Powers standalone operation via Firebase Realtime Database or Local Simulation
+  // =========================================================================
+
+  const CLIENT_SCENARIOS = {
+    safe: {
+      device: 'ESP32_LANDSLIDE_01',
+      soil_moisture: 35.0,
+      rain_level: 8.0,
+      soil_raw: 2800,
+      rain_raw: 3800,
+      tilt_x: 1.2,
+      tilt_y: 0.8,
+      acceleration: 9.81,
+      distance_cm: 15.0,
+      displacement_cm: 0.2,
+      tilt_sensor: false,
+      soil_trend: 1.0,
+      rain_trend: 0.5,
+      history_samples: 120,
+      risk_score: 0,
+      status: 'SAFE',
+      sensor_fault: false,
+      gps_valid: true,
+      latitude: 19.1334,
+      longitude: 72.9133,
+      gps_altitude: 125.0,
+      gps_speed: 0.0,
+      gps_satellites: 8,
+      temperature: 27.2,
+      humidity: 74.0,
+      battery: 95.0,
+    },
+    warning: {
+      device: 'ESP32_LANDSLIDE_01',
+      soil_moisture: 68.0,
+      rain_level: 62.0,
+      soil_raw: 1800,
+      rain_raw: 2200,
+      tilt_x: 6.8,
+      tilt_y: 4.5,
+      acceleration: 10.5,
+      distance_cm: 13.5,
+      displacement_cm: 1.5,
+      tilt_sensor: false,
+      soil_trend: 12.0,
+      rain_trend: 15.0,
+      history_samples: 120,
+      risk_score: 5,
+      status: 'WARNING',
+      sensor_fault: false,
+      gps_valid: true,
+      latitude: 19.1334,
+      longitude: 72.9133,
+      gps_altitude: 125.0,
+      gps_speed: 0.0,
+      gps_satellites: 7,
+      temperature: 24.5,
+      humidity: 86.0,
+      battery: 91.0,
+    },
+    high_risk: {
+      device: 'ESP32_LANDSLIDE_01',
+      soil_moisture: 79.0,
+      rain_level: 75.0,
+      soil_raw: 1400,
+      rain_raw: 1600,
+      tilt_x: 12.5,
+      tilt_y: 8.9,
+      acceleration: 11.9,
+      distance_cm: 11.8,
+      displacement_cm: 3.2,
+      tilt_sensor: true,
+      soil_trend: 22.0,
+      rain_trend: 24.0,
+      history_samples: 120,
+      risk_score: 8,
+      status: 'HIGH_RISK',
+      sensor_fault: false,
+      gps_valid: true,
+      latitude: 19.1334,
+      longitude: 72.9133,
+      gps_altitude: 125.0,
+      gps_speed: 0.0,
+      gps_satellites: 7,
+      temperature: 23.0,
+      humidity: 94.0,
+      battery: 88.0,
+    },
+    danger: {
+      device: 'ESP32_LANDSLIDE_01',
+      soil_moisture: 93.0,
+      rain_level: 91.0,
+      soil_raw: 800,
+      rain_raw: 900,
+      tilt_x: 24.0,
+      tilt_y: 16.5,
+      acceleration: 14.8,
+      distance_cm: 8.5,
+      displacement_cm: 6.5,
+      tilt_sensor: true,
+      soil_trend: 35.0,
+      rain_trend: 38.0,
+      history_samples: 120,
+      risk_score: 11,
+      status: 'DANGER',
+      sensor_fault: false,
+      gps_valid: true,
+      latitude: 19.1334,
+      longitude: 72.9133,
+      gps_altitude: 125.0,
+      gps_speed: 0.0,
+      gps_satellites: 6,
+      temperature: 22.0,
+      humidity: 99.0,
+      battery: 85.0,
+    },
+  };
+
+  function calculateClientRisk(reading) {
+    if (!reading) return { level: 'SAFE', score: 0, status: 'SAFE' };
+
+    const soilPct = Number(reading.soil_moisture ?? 0);
+    const rainPct = Number(reading.rain_level ?? 0);
+    const angleX = Number(reading.tilt_x ?? reading.angle_x ?? 0);
+    const angleY = Number(reading.tilt_y ?? reading.angle_y ?? 0);
+    const tiltActive = Boolean(reading.tilt_sensor ?? reading.tilt_active);
+    const accel = Number(reading.acceleration ?? reading.accel ?? 9.8);
+    const displacementCm = Number(reading.displacement_cm ?? (reading.displacement_mm ? reading.displacement_mm / 10 : 0));
+
+    let score = 0;
+    // Section 6 Geotechnical formula
+    if (soilPct >= 80) score += 3;
+    else if (soilPct >= 60) score += 2;
+    else if (soilPct >= 40) score += 1;
+
+    if (rainPct >= 80) score += 3;
+    else if (rainPct >= 60) score += 2;
+    else if (rainPct >= 40) score += 1;
+
+    const tilt = Math.max(Math.abs(angleX), Math.abs(angleY));
+    if (tilt >= 20) score += 3;
+    else if (tilt >= 10) score += 2;
+    else if (tilt >= 5) score += 1;
+
+    if (tiltActive) score += 2;
+
+    if (accel > 13) score += 2;
+    else if (accel > 11) score += 1;
+
+    if (displacementCm > 5) score += 3;
+    else if (displacementCm > 2) score += 2;
+    else if (displacementCm > 1) score += 1;
+
+    let status = 'SAFE';
+    if (score >= 10) status = 'DANGER';
+    else if (score >= 7) status = 'HIGH_RISK';
+    else if (score >= 4) status = 'WARNING';
+
+    return {
+      score,
+      status,
+      level: status,
+      color: status === 'DANGER' ? '#b91c1c' : status === 'HIGH_RISK' ? '#ef4444' : status === 'WARNING' ? '#f59e0b' : '#10b981',
+      indication: status === 'DANGER' ? 'Red LED; continuous buzzer' : (status === 'HIGH_RISK' ? 'Red LED; repeated beeps' : (status === 'WARNING' ? 'Yellow LED; short beep' : 'Green LED; buzzer off')),
+      factors: {
+        soilScore: soilPct >= 80 ? 3 : soilPct >= 60 ? 2 : soilPct >= 40 ? 1 : 0,
+        rainScore: rainPct >= 80 ? 3 : rainPct >= 60 ? 2 : rainPct >= 40 ? 1 : 0,
+        tiltScore: tilt >= 20 ? 3 : tilt >= 10 ? 2 : tilt >= 5 ? 1 : 0,
+        displacementScore: displacementCm > 5 ? 3 : displacementCm > 2 ? 2 : displacementCm > 1 ? 1 : 0,
+      },
+    };
+  }
+
+  function buildClientState(reading) {
+    const ageSeconds = state.lastHardwareReceivedAt
+      ? Math.max(0, Math.round((Date.now() - state.lastHardwareReceivedAt) / 1000))
+      : 0;
+
+    const cfg = window.LANDSLIDE_CONFIG || {};
+    const staleThreshold = cfg.TIMING?.STALE_THRESHOLD_SECONDS || 30;
+    const disconnectThreshold = cfg.TIMING?.DISCONNECT_THRESHOLD_SECONDS || 120;
+
+    let hwStatus = 'connected';
+    let isStale = false;
+    if (ageSeconds > disconnectThreshold) {
+      hwStatus = 'unavailable';
+    } else if (ageSeconds > staleThreshold) {
+      hwStatus = 'stale';
+      isStale = true;
+    }
+
+    const gpsValid = Boolean(reading?.gps_valid && reading.latitude && reading.longitude && !(reading.latitude === 0 && reading.longitude === 0));
+    const lat = gpsValid ? Number(reading.latitude) : (cfg.SITE_COORDINATES?.lat || 19.1334);
+    const lng = gpsValid ? Number(reading.longitude) : (cfg.SITE_COORDINATES?.lng || 72.9133);
+
+    const risk = calculateClientRisk(reading);
+
+    return {
+      success: true,
+      hardware: {
+        latest: reading,
+        isStale,
+        ageSeconds,
+        status: hwStatus,
+      },
+      gpsLocationState: gpsValid ? {
+        status: 'AVAILABLE',
+        coordinates: { latitude: lat, longitude: lng },
+        ageSeconds,
+      } : {
+        status: 'UNAVAILABLE',
+        reason: 'No hardware GPS satellite fix',
+      },
+      weather: state.latestWeather || {
+        status: 'cached',
+        current: { temperature_c: 27, relative_humidity_pct: 75, precipitation_mm: 0, rain_mm: 0 },
+        summary: { next24hPrecipitationMm: 0, isHeavyRainExpected: false },
+        ageMinutes: 0,
+        cached: true,
+        isAvailableForCurrentGps: true,
+      },
+      risk,
+      site: {
+        label: cfg.SITE_COORDINATES?.name || 'IIT Bombay Hillside Station #1',
+        latitude: lat,
+        longitude: lng,
+      },
+      hardwareLocation: {
+        latitude: lat,
+        longitude: lng,
+        elevation: reading?.gps_altitude ?? 120,
+        satellites: reading?.gps_satellites ?? 0,
+        label: 'ESP32 Slope Monitoring Node',
+      },
+      hazardArea: {
+        center: [lng, lat],
+        radiusMeters: risk.status === 'DANGER' ? 800 : (risk.status === 'HIGH_RISK' ? 500 : (risk.status === 'WARNING' ? 300 : 150)),
+        riskLevel: risk.status,
+      },
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  async function fetchClientWeather(force = false) {
+    let lat = state.hardwareLocation?.latitude;
+    let lng = state.hardwareLocation?.longitude;
+
+    if (!lat || !lng) {
+      const cfgSite = window.LANDSLIDE_CONFIG?.SITE_COORDINATES;
+      lat = cfgSite?.lat || 19.1334;
+      lng = cfgSite?.lng || 72.9133;
+    }
+
+    const baseUrl = window.LANDSLIDE_CONFIG?.WEATHER_API_URL || 'https://api.open-meteo.com/v1/forecast';
+    const url = `${baseUrl}?latitude=${lat}&longitude=${lng}&current=temperature_2m,relative_humidity_2m,precipitation,rain,weather_code,wind_speed_10m&hourly=precipitation,rain&forecast_days=2&timezone=auto`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const hourly24 = json.hourly?.precipitation?.slice(0, 24) || [];
+      const next24hPrecipitationMm = hourly24.reduce((sum, val) => sum + (Number(val) || 0), 0);
+
+      const weatherData = {
+        source: 'open-meteo',
+        latitude: json.latitude,
+        longitude: json.longitude,
+        fetchedCoordinates: {
+          latitude: Number(lat.toFixed(4)),
+          longitude: Number(lng.toFixed(4)),
+        },
+        timezone: json.timezone,
+        elevation: json.elevation,
+        current: {
+          time: json.current?.time,
+          temperature_c: json.current?.temperature_2m ?? null,
+          relative_humidity_pct: json.current?.relative_humidity_2m ?? null,
+          precipitation_mm: json.current?.precipitation ?? 0,
+          rain_mm: json.current?.rain ?? 0,
+        },
+        hourly: {
+          time: json.hourly?.time?.slice(0, 24) || [],
+          precipitation: hourly24,
+          rain: json.hourly?.rain?.slice(0, 24) || [],
+        },
+        summary: {
+          next24hPrecipitationMm: Number(next24hPrecipitationMm.toFixed(2)),
+          isHeavyRainExpected: hourly24.some((p) => Number(p) >= 10.0),
+        },
+        fetchedAt: new Date().toISOString(),
+        cached: true,
+        isStale: false,
+        ageMinutes: 0,
+        isAvailableForCurrentGps: true,
+      };
+      state.latestWeather = weatherData;
+      return weatherData;
+    } catch (err) {
+      clearTimeout(timeoutId);
+      console.warn('[Dashboard] Direct Open-Meteo weather fetch error:', err.message);
+      return null;
+    }
+  }
+
+  function initFirebaseRealtime() {
+    const dbUrl = window.LANDSLIDE_CONFIG?.FIREBASE_DATABASE_URL;
+    if (!window.firebase || !dbUrl || !dbUrl.trim().length) {
+      console.log('[Dashboard] Firebase URL not configured; running in interactive Simulation mode');
+      if (elements.demoActiveBadgeText) {
+        elements.demoActiveBadgeText.textContent = 'SIMULATION';
+        elements.demoActiveBadge?.classList.remove('hidden');
+      }
+      return false;
+    }
+
+    try {
+      if (!firebase.apps.length) {
+        firebase.initializeApp({ databaseURL: dbUrl });
+      }
+      const db = firebase.database();
+      const latestRef = db.ref('landslide/latest');
+
+      latestRef.on(
+        'value',
+        (snapshot) => {
+          const reading = snapshot.val();
+          if (reading && typeof reading === 'object') {
+            console.log('[Dashboard] Received live reading from Firebase:', reading);
+            state.latestHardwareReading = reading;
+            state.lastHardwareReceivedAt = Date.now();
+            state.firebaseConnected = true;
+            if (elements.demoActiveBadgeText) {
+              elements.demoActiveBadgeText.textContent = 'FIREBASE LIVE';
+              elements.demoActiveBadge?.classList.remove('hidden');
+            }
+            pollTelemetryState();
+          }
+        },
+        (err) => {
+          console.warn('[Dashboard] Firebase listener read error:', err.message);
+        }
+      );
+
+      console.log('[Dashboard] Firebase Realtime Database connected to:', dbUrl);
+      return true;
+    } catch (err) {
+      console.warn('[Dashboard] Firebase initialization error:', err.message);
+      return false;
+    }
+  }
+
+  // =========================================================================
   // 1. INITIALIZATION & BOOTSTRAP
   // =========================================================================
   async function init() {
     setupEventListeners();
     setupNotificationPermissionUI();
 
-    // Fetch static configurations in parallel
+    // Initialize Firebase Realtime Database if configured
+    initFirebaseRealtime();
+
+    // Fetch initial static configurations and live Open-Meteo weather
     await Promise.all([
       fetchTranslations(),
       fetchRecipientStatus(),
       fetchAlertLog(),
+      fetchClientWeather(),
     ]);
 
     // Setup lazy loading for evacuation map
@@ -455,6 +821,11 @@
     await pollTelemetryState();
     await syncDemoStatus();
     startPollingLoop();
+
+    // Schedule client-side weather refresh every 15 mins
+    setInterval(() => {
+      fetchClientWeather();
+    }, window.LANDSLIDE_CONFIG?.TIMING?.WEATHER_POLL_INTERVAL_MS || 15 * 60 * 1000);
 
     // Smooth 1-second tick for real-time elapsed seconds counter (no DOM rebuild / reflow)
     setInterval(() => {
@@ -989,9 +1360,36 @@
     state.isFetchingTelemetry = true;
 
     try {
-      const res = await fetch('/api/state');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      let data = null;
+
+      // 1. Primary Source: Firebase Realtime Hardware Telemetry (if available)
+      if (state.latestHardwareReading) {
+        data = buildClientState(state.latestHardwareReading);
+      } else {
+        // 2. Secondary Source: Local Express Backend (if running locally)
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 1200);
+          const res = await fetch('/api/state', { signal: controller.signal });
+          clearTimeout(timer);
+          if (res.ok) {
+            data = await res.json();
+          }
+        } catch (_) {
+          // Local server not running (e.g. static Vercel or GitHub Pages)
+        }
+
+        // 3. Fallback Source: Interactive Client Simulator (Scenario)
+        if (!data) {
+          const scenarioKey = state.demo.currentScenario || 'safe';
+          const scenarioReading = CLIENT_SCENARIOS[scenarioKey] || CLIENT_SCENARIOS.safe;
+          data = buildClientState({
+            ...scenarioReading,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+
       state.latestTelemetry = data;
 
       // Validate incoming hardware reading against geotechnical bounds
@@ -1583,14 +1981,17 @@
   // =========================================================================
   async function fetchTranslations() {
     try {
-      const res = await fetch('/api/translations?includeEnglish=true');
+      let res = await fetch('translations.json');
+      if (!res.ok) {
+        res = await fetch('/api/translations?includeEnglish=true');
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      state.translations = data.translations || [];
+      state.translations = Array.isArray(data) ? data : (data.translations || []);
 
       renderTranslationsTable(state.translations);
     } catch (err) {
-      console.error('[Dashboard] Error fetching translations:', err.message);
+      console.warn('[Dashboard] Could not fetch external translations, using baseline:', err.message);
     }
   }
 
@@ -1840,10 +2241,37 @@
 
   async function fetchMapConfigAndInit() {
     try {
-      const res = await fetch('/api/map-config');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      state.mapConfig = await res.json();
+      const cfg = window.LANDSLIDE_CONFIG || {};
+      let configData = null;
 
+      // Try local backend if present
+      try {
+        const res = await fetch('/api/map-config');
+        if (res.ok) configData = await res.json();
+      } catch (_) {}
+
+      // Fallback to client configuration
+      if (!configData) {
+        configData = {
+          styleUrl: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          satelliteTileUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+          satelliteEnabled: true,
+          safeDestination: {
+            latitude: cfg.SITE_COORDINATES?.evacuationShelter?.lat || 19.1380,
+            longitude: cfg.SITE_COORDINATES?.evacuationShelter?.lng || 72.9170,
+            label: cfg.SITE_COORDINATES?.evacuationShelter?.name || 'Central Emergency Evacuation Center',
+            verified: true,
+          },
+          site: {
+            latitude: cfg.SITE_COORDINATES?.lat || 19.1334,
+            longitude: cfg.SITE_COORDINATES?.lng || 72.9133,
+            label: cfg.SITE_COORDINATES?.name || 'IIT Bombay Hillside Station #1',
+            isCustomLocation: false,
+          },
+        };
+      }
+
+      state.mapConfig = configData;
       initMap(state.mapConfig);
       await fetchAndRenderRoute();
     } catch (err) {
@@ -1950,41 +2378,91 @@
   }
 
   async function fetchAndRenderRoute(originLat, originLng) {
-    let url = '/api/route';
-    if (originLat !== undefined && originLng !== undefined) {
-      url += `?originLat=${originLat}&originLng=${originLng}`;
-    }
+    const cfg = window.LANDSLIDE_CONFIG || {};
+    const startLat = originLat ?? state.hardwareLocation?.latitude ?? cfg.SITE_COORDINATES?.lat ?? 19.1334;
+    const startLon = originLng ?? state.hardwareLocation?.longitude ?? cfg.SITE_COORDINATES?.lng ?? 72.9133;
+    const destLat = state.mapConfig?.safeDestination?.latitude ?? cfg.SITE_COORDINATES?.evacuationShelter?.lat ?? 19.1380;
+    const destLon = state.mapConfig?.safeDestination?.longitude ?? cfg.SITE_COORDINATES?.evacuationShelter?.lng ?? 72.9170;
+
+    // Direct OSRM public routing API
+    const routerBase = cfg.OSRM_ROUTER_URL || 'https://router.project-osrm.org/route/v1/driving';
+    const routerUrl = `${routerBase}/${startLon},${startLat};${destLon},${destLat}?overview=full&geometries=geojson`;
 
     try {
-      const res = await fetch(url);
-      const data = await res.json();
+      let routeData = null;
 
-      if (!res.ok || !data.success) {
-        elements.routeStatusBadge.textContent = 'NO ROUTE';
-        elements.routeStatusBadge.className = 'status-pill status-danger';
-        elements.routeDistanceDisplay.textContent = '—';
-        elements.routeDurationDisplay.textContent = '—';
-        return;
+      // Try local server first if present
+      try {
+        const localRes = await fetch(`/api/route?originLat=${startLat}&originLng=${startLon}`);
+        if (localRes.ok) routeData = await localRes.json();
+      } catch (_) {}
+
+      // Fallback to direct client OSRM request
+      if (!routeData || !routeData.success) {
+        const res = await fetch(routerUrl);
+        const data = await res.json();
+        if (res.ok && data.code === 'Ok' && data.routes && data.routes.length) {
+          const route = data.routes[0];
+          const distanceMeters = Math.round(route.distance);
+          const distanceKm = (distanceMeters / 1000).toFixed(2);
+          const durationMinutes = Math.max(1, Math.round(route.duration / 60));
+          routeData = {
+            success: true,
+            originLabel: state.site?.label || 'Hillside Station',
+            destinationLabel: state.mapConfig?.safeDestination?.label || 'Safe Shelter',
+            distanceKm,
+            distanceMeters,
+            durationMinutes,
+            geometry: {
+              type: 'Feature',
+              properties: {},
+              geometry: route.geometry,
+            },
+          };
+        }
+      }
+
+      if (!routeData || !routeData.success) {
+        throw new Error('No OSRM route available');
       }
 
       // Update statistics
-      elements.routeOriginLabel.textContent = data.originLabel || 'Hillside Station';
-      elements.routeDestLabel.textContent = data.destinationLabel || 'Safe Shelter';
-      elements.routeDistanceDisplay.textContent = `${data.distanceKm} km (${data.distanceMeters.toLocaleString()} m)`;
-      elements.routeDurationDisplay.textContent = `${data.durationMinutes} mins`;
+      elements.routeOriginLabel.textContent = routeData.originLabel || 'Hillside Station';
+      elements.routeDestLabel.textContent = routeData.destinationLabel || 'Safe Shelter';
+      elements.routeDistanceDisplay.textContent = `${routeData.distanceKm} km (${routeData.distanceMeters.toLocaleString()} m)`;
+      elements.routeDurationDisplay.textContent = `${routeData.durationMinutes} mins`;
       elements.routeStatusBadge.textContent = 'ROUTED (OSRM)';
       elements.routeStatusBadge.className = 'status-pill status-safe';
 
       // Draw GeoJSON Route Line on Map
-      if (state.map && state.map.isStyleLoaded() && data.geometry) {
-        renderRouteGeometry(data.geometry);
+      if (state.map && state.map.isStyleLoaded() && routeData.geometry) {
+        renderRouteGeometry(routeData.geometry);
       } else if (state.map) {
-        state.map.once('load', () => renderRouteGeometry(data.geometry));
+        state.map.once('load', () => renderRouteGeometry(routeData.geometry));
       }
     } catch (err) {
-      console.warn('[Dashboard] Route fetch error:', err.message);
-      elements.routeStatusBadge.textContent = 'OFFLINE';
+      console.warn('[Dashboard] Direct OSRM route fetch error, using straight-line bearing:', err.message);
+      const fallbackGeometry = {
+        type: 'Feature',
+        properties: {},
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [startLon, startLat],
+            [destLon, destLat],
+          ],
+        },
+      };
+      elements.routeOriginLabel.textContent = 'Hillside Station';
+      elements.routeDestLabel.textContent = 'Safe Shelter';
+      elements.routeDistanceDisplay.textContent = 'Direct Bearing';
+      elements.routeDurationDisplay.textContent = '~5 mins';
+      elements.routeStatusBadge.textContent = 'BEARING LINE';
       elements.routeStatusBadge.className = 'status-pill status-warning';
+
+      if (state.map && state.map.isStyleLoaded()) {
+        renderRouteGeometry(fallbackGeometry);
+      }
     }
   }
 
@@ -2168,20 +2646,26 @@
   // =========================================================================
   async function handleFocusHardwareLocation() {
     try {
-      const res = await fetch('/api/hardware/location');
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || 'Failed to retrieve hardware location');
+      let loc = state.hardwareLocation || state.latestTelemetry?.hardwareLocation;
+
+      // Try local server if present and not in local state
+      if (!loc) {
+        try {
+          const res = await fetch('/api/hardware/location');
+          if (res.ok) {
+            const data = await res.json();
+            loc = data.hardwareLocation;
+          }
+        } catch (_) {}
       }
 
-      const loc = data.hardwareLocation;
       if (!loc || loc.latitude === null || loc.latitude === undefined || loc.longitude === null || loc.longitude === undefined || loc.status === 'UNAVAILABLE' || (loc.latitude === 0 && loc.longitude === 0)) {
         showGeoStatus('⚠️ Hardware GPS fix is currently unavailable. No satellite fix coordinates received.');
         document.getElementById('hazardAreaSection')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         return;
       }
 
-      showGeoStatus(`📡 Focused on hardware setup: ${loc.label || 'Hardware Node'} (${loc.latitude.toFixed(4)}° N, ${loc.longitude.toFixed(4)}° E, Elev: ${loc.altitude_m ?? '—'}m)`);
+      showGeoStatus(`📡 Focused on hardware setup: ${loc.label || 'Hardware Node'} (${loc.latitude.toFixed(4)}° N, ${loc.longitude.toFixed(4)}° E, Elev: ${loc.altitude_m ?? loc.elevation ?? '—'}m)`);
 
       // Fly map to hardware setup location
       if (state.map) {
@@ -2518,12 +3002,26 @@
   // =========================================================================
   async function fetchRecipientStatus() {
     try {
-      const res = await fetch('/api/recipient');
-      if (!res.ok) return;
-      const data = await res.json();
+      let recip = null;
+      // 1. Try local storage first (instant zero-server)
+      const stored = localStorage.getItem('landslide_recipient');
+      if (stored) {
+        try { recip = JSON.parse(stored); } catch (_) {}
+      }
 
-      if (data.recipient && data.recipient.phone && data.recipient.consentGiven) {
-        renderActiveRecipient(data.recipient);
+      // 2. Try server if available
+      if (!recip) {
+        try {
+          const res = await fetch('/api/recipient');
+          if (res.ok) {
+            const data = await res.json();
+            recip = data.recipient;
+          }
+        } catch (_) {}
+      }
+
+      if (recip && recip.phone && recip.consentGiven) {
+        renderActiveRecipient(recip);
       } else {
         elements.activeRecipientCard.classList.add('hidden');
         elements.recipientForm.classList.remove('hidden');
@@ -2560,21 +3058,31 @@
       return;
     }
 
-    try {
-      const res = await fetch('/api/recipient', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ countryCode, phone, consent: true, notes }),
-      });
+    const fullPhone = phone.startsWith('+') ? phone : `${countryCode} ${phone}`;
+    const recipObj = {
+      countryCode,
+      phone: fullPhone,
+      consentGiven: true,
+      consentTimestamp: new Date().toISOString(),
+      notes,
+    };
 
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || 'Failed to save recipient');
-      }
+    try {
+      // Save locally
+      localStorage.setItem('landslide_recipient', JSON.stringify(recipObj));
+
+      // Attempt server sync if running
+      try {
+        await fetch('/api/recipient', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ countryCode, phone, consent: true, notes }),
+        });
+      } catch (_) {}
 
       showFeedback('Emergency recipient registered successfully with affirmative consent.', 'success');
       elements.recipientForm.reset();
-      renderActiveRecipient(data.recipient);
+      renderActiveRecipient(recipObj);
       await fetchAlertLog();
     } catch (err) {
       showFeedback(err.message, 'error');
@@ -2587,9 +3095,10 @@
     }
 
     try {
-      const res = await fetch('/api/recipient', { method: 'DELETE' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to delete recipient');
+      localStorage.removeItem('landslide_recipient');
+      try {
+        await fetch('/api/recipient', { method: 'DELETE' });
+      } catch (_) {}
 
       elements.activeRecipientCard.classList.add('hidden');
       elements.recipientForm.classList.remove('hidden');
@@ -2615,19 +3124,41 @@
     elements.testAlertResult.classList.add('hidden');
 
     try {
-      const res = await fetch('/api/alerts/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customNote: 'Manual Console Health Check' }),
-      });
+      let data = null;
+      try {
+        const res = await fetch('/api/alerts/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ customNote: 'Manual Console Health Check' }),
+        });
+        if (res.ok) data = await res.json();
+      } catch (_) {}
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Test alert failed');
+      if (!data) {
+        const stored = localStorage.getItem('landslide_recipient');
+        const recip = stored ? JSON.parse(stored) : { phone: '+91 (Emergency Contact)' };
+        data = {
+          success: true,
+          provider: 'Simulated Client Dispatch',
+          recipient: recip.phone || 'Designated Contact',
+          message: '[TEST ALERT] Slope stability alert pathways verified operational.',
+        };
+      }
 
       elements.testAlertResult.textContent = `[SIMULATED DISPATCH SUCCESS]\nProvider: ${data.provider} (No real SMS billed)\nRecipient: ${data.recipient}\nMessage: ${data.message}\nTimestamp: ${new Date().toLocaleTimeString()}`;
       elements.testAlertResult.classList.remove('hidden');
 
-      await fetchAlertLog();
+      // Add to local audit log
+      const testAlert = {
+        timestamp: new Date().toISOString(),
+        type: 'TEST_ALERT',
+        status: 'NOMINAL',
+        message: `Simulated test alert dispatched to ${data.recipient}.`,
+      };
+      state.localAlertLog.unshift(testAlert);
+      localStorage.setItem('landslide_alert_log', JSON.stringify(state.localAlertLog.slice(0, 100)));
+
+      renderAuditLog(state.localAlertLog);
     } catch (err) {
       elements.testAlertResult.textContent = `[TEST ALERT ERROR] ${err.message}`;
       elements.testAlertResult.classList.remove('hidden');
@@ -2641,37 +3172,22 @@
   // 7. WEATHER ON-DEMAND REFRESH (/api/weather/refresh)
   // =========================================================================
   async function refreshWeatherForecast() {
-    if (state.gpsLocationState === GPS_LOCATION_STATE.UNAVAILABLE) {
-      if (elements.weatherNoticeBanner) {
-        elements.weatherNoticeBanner.textContent = 'Weather unavailable: no current GPS location';
-        elements.weatherNoticeBanner.className = 'weather-notice-banner notice-error';
-        elements.weatherNoticeBanner.classList.remove('hidden');
-      }
-      return;
-    }
-    if (state.gpsLocationState === GPS_LOCATION_STATE.STALE) {
-      if (elements.weatherNoticeBanner) {
-        elements.weatherNoticeBanner.textContent = 'Weather unavailable: no current GPS location (GPS fix stale)';
-        elements.weatherNoticeBanner.className = 'weather-notice-banner notice-warning';
-        elements.weatherNoticeBanner.classList.remove('hidden');
-      }
-      return;
-    }
-
     elements.refreshWeatherBtn.disabled = true;
     elements.refreshWeatherBtn.textContent = 'Updating...';
 
     try {
-      const res = await fetch('/api/weather/refresh', { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok) {
-        const errorMsg = data.error || (res.status === 429 ? 'Weather API rate limited. Please wait.' : res.status === 504 ? 'Weather API timed out.' : 'Failed to refresh weather');
-        if (elements.weatherNoticeBanner) {
-          elements.weatherNoticeBanner.textContent = errorMsg;
-          elements.weatherNoticeBanner.className = 'weather-notice-banner notice-warning';
-          elements.weatherNoticeBanner.classList.remove('hidden');
-        }
-        return;
+      let updated = false;
+
+      // Try server if available
+      try {
+        const res = await fetch('/api/weather/refresh', { method: 'POST' });
+        if (res.ok) updated = true;
+      } catch (_) {}
+
+      // Fallback to client-side direct Open-Meteo fetch
+      if (!updated) {
+        const wx = await fetchClientWeather(true);
+        if (wx) updated = true;
       }
 
       if (elements.weatherNoticeBanner) {
@@ -2697,13 +3213,26 @@
   // =========================================================================
   async function fetchAlertLog() {
     try {
-      const res = await fetch('/api/alerts?limit=25');
-      if (!res.ok) return;
-      const data = await res.json();
-      const alerts = data.alerts || [];
+      // 1. Try local storage
+      const stored = localStorage.getItem('landslide_alert_log');
+      if (stored) {
+        try { state.localAlertLog = JSON.parse(stored); } catch (_) {}
+      }
+      if (!Array.isArray(state.localAlertLog)) state.localAlertLog = [];
 
-      elements.auditCountBadge.textContent = `${data.stats?.totalLogged ?? alerts.length} Events`;
-      renderAuditLog(alerts);
+      // 2. Try server if available
+      try {
+        const res = await fetch('/api/alerts?limit=25');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.alerts && data.alerts.length) {
+            state.localAlertLog = data.alerts;
+          }
+        }
+      } catch (_) {}
+
+      elements.auditCountBadge.textContent = `${state.localAlertLog.length} Events`;
+      renderAuditLog(state.localAlertLog);
     } catch (err) {
       console.warn('[Dashboard] Alert log fetch error:', err.message);
     }
@@ -2786,6 +3315,9 @@
     elements.demoControllerSection?.classList.add('hidden');
   }
 
+  const DEMO_SCENARIO_KEYS = ['safe', 'warning', 'high_risk', 'danger'];
+  let demoCycleIndex = 0;
+
   async function handleStartDemoStream() {
     const speed = parseInt(elements.demoSpeedSelect?.value || '2500', 10);
     const autoCycle = Boolean(elements.autoCycleCheckbox?.checked);
@@ -2804,22 +3336,49 @@
       elements.demoActiveBadgeText.textContent = 'STREAMING';
     }
 
+    // Try server start if running
     try {
       await fetch('/api/demo/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ intervalMs: speed, autoCycle, scenario: state.demo.currentScenario }),
       });
-    } catch (err) {
-      console.warn('Backend demo start error:', err);
-    }
+    } catch (_) {}
 
-    // Immediately poll state and start expedited client-side polling
+    // Immediately poll state
     await pollTelemetryState();
     await fetchAlertLog();
 
     if (state.demo.pollTimer) clearInterval(state.demo.pollTimer);
     state.demo.pollTimer = setInterval(async () => {
+      if (state.demo.autoCycle) {
+        demoCycleIndex = (demoCycleIndex + 1) % DEMO_SCENARIO_KEYS.length;
+        const nextScenario = DEMO_SCENARIO_KEYS[demoCycleIndex];
+        state.demo.currentScenario = nextScenario;
+        elements.demoScenarioButtons?.forEach((b) => {
+          b.classList.toggle('active', b.dataset.scenario === nextScenario);
+        });
+        if (CLIENT_SCENARIOS[nextScenario]) {
+          state.latestHardwareReading = {
+            ...CLIENT_SCENARIOS[nextScenario],
+            timestamp: new Date().toISOString(),
+          };
+          state.lastHardwareReceivedAt = Date.now();
+        }
+      } else {
+        // Add realistic micro-variations
+        const current = CLIENT_SCENARIOS[state.demo.currentScenario || 'safe'];
+        if (current) {
+          const jitter = (Math.random() - 0.5) * 0.4;
+          state.latestHardwareReading = {
+            ...current,
+            soil_moisture: Math.max(0, Math.min(100, Number((current.soil_moisture + jitter).toFixed(1)))),
+            rain_level: Math.max(0, Math.min(100, Number((current.rain_level + jitter * 0.5).toFixed(1)))),
+            timestamp: new Date().toISOString(),
+          };
+          state.lastHardwareReceivedAt = Date.now();
+        }
+      }
       await pollTelemetryState();
       await fetchAlertLog();
       await syncDemoStatus();
@@ -2843,9 +3402,7 @@
 
     try {
       await fetch('/api/demo/stop', { method: 'POST' });
-    } catch (err) {
-      console.warn('Backend demo stop error:', err);
-    }
+    } catch (_) {}
   }
 
   async function handleAutoCycleChange() {
@@ -2874,17 +3431,26 @@
       elements.demoStatusTag.textContent = `SCENARIO: ${scenarioId.toUpperCase()}`;
     }
 
+    // Set client simulated reading immediately
+    if (CLIENT_SCENARIOS[scenarioId]) {
+      state.latestHardwareReading = {
+        ...CLIENT_SCENARIOS[scenarioId],
+        timestamp: new Date().toISOString(),
+      };
+      state.lastHardwareReceivedAt = Date.now();
+    }
+
+    // Inform server if present
     try {
       await fetch('/api/demo/scenario', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scenario: scenarioId }),
       });
-      await pollTelemetryState();
-      await fetchAlertLog();
-    } catch (err) {
-      console.error('Trigger scenario error:', err);
-    }
+    } catch (_) {}
+
+    await pollTelemetryState();
+    await fetchAlertLog();
   }
 
   async function handleApplyCustomSliders() {
@@ -2898,25 +3464,47 @@
       elements.demoStatusTag.textContent = 'CUSTOM VALUES APPLIED';
     }
 
+    const customReading = {
+      device: 'ESP32_LANDSLIDE_01',
+      soil_moisture: soil,
+      rain_level: rain,
+      soil_raw: Math.round(4095 - (soil / 100) * 3500),
+      rain_raw: Math.round(4095 - (rain / 100) * 3500),
+      tilt_x: tilt,
+      tilt_y: tilt * 0.6,
+      displacement_cm: disp,
+      distance_cm: Math.max(1, 15 - disp),
+      tilt_sensor: tiltSwitch,
+      acceleration: tiltSwitch ? 14.5 : 10.2,
+      soil_trend: 5.0,
+      rain_trend: 5.0,
+      history_samples: 120,
+      sensor_fault: false,
+      gps_valid: true,
+      latitude: state.hardwareLocation?.latitude || 19.1334,
+      longitude: state.hardwareLocation?.longitude || 72.9133,
+      gps_altitude: 125.0,
+      gps_speed: 0.0,
+      gps_satellites: 7,
+      temperature: 25.0,
+      humidity: 80.0,
+      battery: 90.0,
+      timestamp: new Date().toISOString(),
+    };
+
+    state.latestHardwareReading = customReading;
+    state.lastHardwareReceivedAt = Date.now();
+
     try {
       await fetch('/api/sensor-data/simulate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          soil_moisture: soil,
-          rain_level: rain,
-          tilt_x: tilt,
-          tilt_y: tilt * 0.6,
-          displacement_cm: disp,
-          tilt_sensor: tiltSwitch,
-          acceleration: tiltSwitch ? 14.5 : 10.2,
-        }),
+        body: JSON.stringify(customReading),
       });
-      await pollTelemetryState();
-      await fetchAlertLog();
-    } catch (err) {
-      console.error('Apply custom sliders error:', err);
-    }
+    } catch (_) {}
+
+    await pollTelemetryState();
+    await fetchAlertLog();
   }
 
   async function syncDemoStatus() {
