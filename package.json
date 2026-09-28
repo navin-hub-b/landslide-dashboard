@@ -1,0 +1,17 @@
+{
+  "name": "landslide-dashboard",
+  "version": "1.0.0",
+  "description": "ESP32 Landslide Early Warning System - Dashboard & Ingestion API",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test \"tests/**/*.test.js\""
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}

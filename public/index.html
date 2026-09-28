@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IIT Bombay Landslide Early-Warning System | Geotechnical Telemetry Console</title>
+  <meta name="description" content="Real-time IoT slope stability monitoring, multi-sensor geotechnical telemetry, automated risk engine, and emergency evacuation routing for landslide prone terrain.">
+  
+  <!-- Typography: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <!-- Core Dashboard Stylesheet -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Accessible Live Region for Screen Readers -->
+  <div id="a11yStatusAnnouncer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- ========================================================= -->
+  <!-- FULL-SCREEN MULTI-LANGUAGE EMERGENCY WARNING SIGN         -->
+  <!-- Active only during HIGH_RISK or DANGER states             -->
+  <!-- ========================================================= -->
+  <aside id="emergencyWarningSign" class="emergency-sign-overlay hidden" role="alert" aria-live="assertive" aria-atomic="true">
+    <div class="hazard-stripe-bar top"></div>
+
+    <div class="warning-sign-box">
+      <div class="warning-icon-wrap">
+        <svg class="warning-triangle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+          <line x1="12" y1="9" x2="12" y2="13"></line>
+          <line x1="12" y1="17" x2="12.01" y2="17"></line>
+        </svg>
+      </div>
+
+      <div class="warning-status-tag" id="emergencyStatusTag">CRITICAL LANDSLIDE DANGER</div>
+
+      <!-- Multi-lingual translation cycling container (Every ~3.5s) -->
+      <div class="warning-translation-container">
+        <h1 id="warningSignText" class="warning-sign-text" lang="en" dir="ltr">
+          LANDSLIDE DANGER — EVACUATE NOW
+        </h1>
+        <div class="warning-lang-badge" id="warningLangBadge">English (Baseline)</div>
+      </div>
+
+      <p class="warning-subtext">
+        Severe slope failure or displacement detected at monitoring site. Immediate evacuation to the designated safe shelter is required.
+      </p>
+
+      <div class="warning-actions">
+        <button id="viewEvacuationMapBtn" class="btn btn-warning-action" type="button">
+          🗺️ View Evacuation Route to Shelter
+        </button>
+        <button id="silenceSirenBtn" class="btn btn-warning-silence" type="button" title="Silence active audio siren alarm">
+          🔇 Silence Siren Sound
+        </button>
+        <button id="snoozeWarningBtn" class="btn btn-warning-dismiss" type="button" aria-label="Minimize warning banner to inspect console">
+          Minimize to Banner (Operator Review)
+        </button>
+      </div>
+    </div>
+
+    <div class="hazard-stripe-bar bottom"></div>
+  </aside>
+
+  <!-- Sticky Emergency Header Banner when minimized -->
+  <div id="stickyWarningBanner" class="sticky-warning-banner hidden" role="alert">
+    <div class="banner-content">
+      <span class="pulse-beacon"></span>
+      <strong>EMERGENCY ACTIVE:</strong>
+      <span id="stickyBannerText">LANDSLIDE DANGER — EVACUATE NOW</span>
+      <span class="banner-lang" id="stickyBannerLang">(English)</span>
+    </div>
+    <div class="banner-actions">
+      <button id="silenceStickySirenBtn" class="btn btn-sm btn-outline-warning" type="button">🔇 Silence Siren</button>
+      <button id="reopenWarningBtn" class="btn btn-sm btn-danger" type="button">Expand Alert</button>
+    </div>
+  </div>
+
+  <div class="app-layout">
+    
+    <!-- ========================================================= -->
+    <!-- TOP NAVIGATION & STATUS BAR                               -->
+    <!-- ========================================================= -->
+    <header class="console-header" role="banner">
+      <div class="header-branding">
+        <div class="radar-scope-icon" aria-hidden="true">
+          <div class="scope-sweep"></div>
+        </div>
+        <div>
+          <h1 class="system-title">IIT Bombay Geotechnical Early-Warning System</h1>
+          <p class="system-subtitle">Continuous IoT Slope Stability, Hydrometeorological Risk & Evacuation Telemetry</p>
+        </div>
+      </div>
+
+      <div class="header-controls">
+        <!-- Browser Notification Status & Permission Button -->
+        <div class="notification-control" id="notificationControl">
+          <button id="requestNotificationBtn" class="btn btn-sm btn-outline-cyan" type="button" title="Enable browser push alerts for slope hazards">
+            <span class="bell-icon" aria-hidden="true">🔔</span>
+            <span id="notificationBtnText">Enable Browser Alerts</span>
+          </button>
+          <span id="notificationFallbackMsg" class="notification-fallback hidden"></span>
+        </div>
+
+        <!-- Telemetry & Polling Status Indicators -->
+        <div class="telemetry-badges">
+          <div class="freshness-badge" id="hwFreshnessBadge" title="ESP32 hardware telemetry connection status">
+            <span class="indicator-dot online"></span>
+            <span class="badge-label">HARDWARE:</span>
+            <span class="badge-value" id="hwFreshnessText">CONNECTING...</span>
+          </div>
+
+          <div class="freshness-badge" id="wxFreshnessBadge" title="Open-Meteo precipitation forecast cache status">
+            <span class="indicator-dot online"></span>
+            <span class="badge-label">WEATHER:</span>
+            <span class="badge-value" id="wxFreshnessText">LOADING...</span>
+          </div>
+
+          <div class="freshness-badge hidden" id="demoActiveBadge" title="Live simulation stream active">
+            <span class="indicator-dot online"></span>
+            <span class="badge-label">DEMO:</span>
+            <span class="badge-value" id="demoActiveBadgeText">ACTIVE</span>
+          </div>
+
+          <button id="manualRefreshBtn" class="btn btn-sm btn-secondary" type="button" title="Poll latest telemetry state">
+            <span class="spin-icon" aria-hidden="true">🔄</span> Poll State
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- ========================================================= -->
+    <!-- LOCATION & EMERGENCY ALERT COMMAND BAR                    -->
+    <!-- Supports GPS Location, Custom Coordinates & Audio Siren   -->
+    <!-- ========================================================= -->
+    <section class="location-command-bar" role="region" aria-label="Monitoring location and audio siren controls">
+      <div class="location-command-left">
+        <span class="location-pin-icon" aria-hidden="true">📍</span>
+        <div class="location-details">
+          <span class="location-caption">MONITORED LOCATION &amp; WEATHER STATION</span>
+          <div class="location-name-row">
+            <strong id="stationTitleDisplay" class="station-title">IIT Bombay Hillside Station #1</strong>
+            <span id="stationCoordsBadge" class="station-coords-badge">19.1334° N, 72.9133° E</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="location-command-actions">
+        <button id="toggleLiveDemoBtn" class="btn btn-sm btn-cyan btn-demo-glow" type="button" title="Open Interactive Live Demo & Hazard Simulator">
+          <span aria-hidden="true">🎮</span> Live Demo Mode
+        </button>
+        <button id="focusHardwareLocationBtn" class="btn btn-sm btn-outline-cyan" type="button" title="View physical hardware setup coordinates and monitored slope area">
+          <span aria-hidden="true">📡</span> Hardware Setup Location
+        </button>
+        <span id="gpsStateCommandBadge" class="station-gps-badge" title="Hardware GPS Fix Status">
+          <span class="indicator-dot loading"></span> GPS Fix: Acquiring...
+        </span>
+        <button id="toggleAudioSirenBtn" class="btn btn-sm btn-outline-warning" type="button" title="Toggle audible emergency siren alarm">
+          <span id="audioSirenIcon" aria-hidden="true">🔊</span>
+          <span id="audioSirenLabel">Siren Sound: ON</span>
+        </button>
+        <button id="testAlarmBtn" class="btn btn-sm btn-danger" type="button" title="Test audible emergency siren right now">
+          <span aria-hidden="true">🚨</span> Test Siren Alert
+        </button>
+      </div>
+    </section>
+
+    <!-- ========================================================= -->
+    <!-- INTERACTIVE LIVE DEMO & HAZARD SIMULATOR SECTION          -->
+    <!-- ========================================================= -->
+    <section class="demo-controller-section hidden" id="demoControllerSection" aria-label="Interactive Live Demo and Hazard Simulator">
+      <div class="demo-controller-header">
+        <div class="demo-controller-title">
+          <span class="demo-icon" aria-hidden="true">🎮</span>
+          <div>
+            <h3>Interactive Live Demo &amp; Geotechnical Hazard Simulator</h3>
+            <p>Experience real-time telemetry streaming, hazard escalation (Safe &rarr; Warning &rarr; High Risk &rarr; Danger), acoustic siren alarms, and multilingual evacuation banners without physical hardware.</p>
+          </div>
+        </div>
+        <div class="demo-header-actions">
+          <span id="demoStatusTag" class="demo-status-tag idle">SIMULATOR IDLE</span>
+          <button id="closeDemoPanelBtn" class="btn btn-sm btn-secondary" type="button" title="Close Demo Panel">✕ Close Demo</button>
+        </div>
+      </div>
+
+      <div class="demo-controller-body">
+        <!-- Live Stream & Auto-Cycle Controls -->
+        <div class="demo-stream-controls">
+          <div class="demo-btn-group">
+            <button id="startDemoStreamBtn" class="btn btn-sm btn-success" type="button">
+              <span>▶️ Start Live Demo Stream</span>
+            </button>
+            <button id="stopDemoStreamBtn" class="btn btn-sm btn-outline-warning hidden" type="button">
+              <span>⏸️ Pause Demo Stream</span>
+            </button>
+          </div>
+
+          <label class="demo-toggle-label" for="autoCycleCheckbox">
+            <input type="checkbox" id="autoCycleCheckbox" checked>
+            <span><strong>Auto-Cycle Hazard Stages</strong> (Progression: Safe &rarr; Warning &rarr; High Risk &rarr; Danger &rarr; Safe)</span>
+          </label>
+
+          <div class="demo-speed-wrap">
+            <label for="demoSpeedSelect">Stream Speed:</label>
+            <select id="demoSpeedSelect" class="form-select-sm">
+              <option value="4000">1x (Every 4s)</option>
+              <option value="2500" selected>1.5x (Every 2.5s)</option>
+              <option value="1500">2.5x (Fast 1.5s)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Scenario Quick Buttons -->
+        <div class="demo-scenarios-panel">
+          <span class="demo-panel-caption">TRIGGER INSTANT HAZARD SCENARIO:</span>
+          <div class="demo-scenario-buttons">
+            <button class="btn-scenario btn-scenario-safe active" data-scenario="safe" type="button" title="Inject Safe Baseline Telemetry">
+              <span class="scenario-icon">🟢</span>
+              <div class="scenario-text">
+                <strong>1. Baseline Safe</strong>
+                <small>Dry soil (24%), zero tilt, normal monitoring</small>
+              </div>
+            </button>
+            <button class="btn-scenario btn-scenario-warning" data-scenario="warning" type="button" title="Inject Monsoon Rainfall Saturation">
+              <span class="scenario-icon">🟡</span>
+              <div class="scenario-text">
+                <strong>2. Monsoon Saturation</strong>
+                <small>Moisture 65%, rain 62%, caution double-beep</small>
+              </div>
+            </button>
+            <button class="btn-scenario btn-scenario-high" data-scenario="high_risk" type="button" title="Inject Slope Shear & Creep">
+              <span class="scenario-icon">🟠</span>
+              <div class="scenario-text">
+                <strong>3. Slope Creep &amp; Shear</strong>
+                <small>Tilt 14°, displacement 3.2cm, alternating siren</small>
+              </div>
+            </button>
+            <button class="btn-scenario btn-scenario-danger" data-scenario="danger" type="button" title="Inject Imminent Catastrophic Landslide">
+              <span class="scenario-icon">🔴</span>
+              <div class="scenario-text">
+                <strong>4. Landslide Failure</strong>
+                <small>Displacement 7cm, tilt tripped, EVACUATE NOW!</small>
+              </div>
+            </button>
+            <button class="btn-scenario btn-scenario-fault" data-scenario="fault" type="button" title="Inject Ultrasonic Transducer Fault">
+              <span class="scenario-icon">⚠️</span>
+              <div class="scenario-text">
+                <strong>5. Transducer Fault</strong>
+                <small>Ultrasonic timeout (-1cm), yellow fault LED</small>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Interactive Sensor Sliders Accordion -->
+        <details class="demo-sliders-details">
+          <summary class="demo-sliders-summary">
+            <span>🎛️ Manual Sensor Tweaker (Fine-tune individual geotechnical parameters in real-time)</span>
+          </summary>
+          <div class="demo-sliders-grid">
+            <div class="slider-group">
+              <div class="slider-label-row">
+                <label for="demoSliderSoil">Soil Moisture:</label>
+                <span id="demoSliderSoilVal" class="slider-value">45%</span>
+              </div>
+              <input type="range" id="demoSliderSoil" min="0" max="100" value="45" class="range-slider">
+            </div>
+            <div class="slider-group">
+              <div class="slider-label-row">
+                <label for="demoSliderRain">Rainfall Level:</label>
+                <span id="demoSliderRainVal" class="slider-value">30%</span>
+              </div>
+              <input type="range" id="demoSliderRain" min="0" max="100" value="30" class="range-slider">
+            </div>
+            <div class="slider-group">
+              <div class="slider-label-row">
+                <label for="demoSliderTilt">Slope Tilt Angle:</label>
+                <span id="demoSliderTiltVal" class="slider-value">4.0°</span>
+              </div>
+              <input type="range" id="demoSliderTilt" min="0" max="35" step="0.5" value="4" class="range-slider">
+            </div>
+            <div class="slider-group">
+              <div class="slider-label-row">
+                <label for="demoSliderDisp">Displacement:</label>
+                <span id="demoSliderDispVal" class="slider-value">0.8 cm</span>
+              </div>
+              <input type="range" id="demoSliderDisp" min="0" max="10" step="0.1" value="0.8" class="range-slider">
+            </div>
+            <div class="slider-group slider-group-actions">
+              <label class="demo-toggle-label" for="demoSliderTiltSwitch">
+                <input type="checkbox" id="demoSliderTiltSwitch">
+                <span>Trip Mechanical Tilt Switch (+2 pts)</span>
+              </label>
+              <button id="applyCustomSliderBtn" class="btn btn-sm btn-cyan" type="button">
+                ⚡ Apply Custom Values
+              </button>
+            </div>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <main class="console-main" role="main">
+
+      <!-- ========================================================= -->
+      <!-- SECTION: RISK HERO & CALCULATION BREAKDOWN                -->
+      <!-- ========================================================= -->
+      <section class="risk-hero-card" id="riskHeroCard" aria-labelledby="riskSectionHeading">
+        <div class="risk-hero-primary">
+          <div class="risk-level-display">
+            <span class="field-caption" id="riskSectionHeading">INTEGRATED HAZARD ASSESSMENT</span>
+            <div class="risk-badge-large status-safe" id="heroStatusBadge">SAFE</div>
+            <div class="hardware-actuation" id="heroActuationText">
+              <span class="indicator-icon">🟢</span>
+              <span id="actuationDetail">All sensors baseline. Green beacon active; buzzer silenced.</span>
+            </div>
+          </div>
+
+          <div class="risk-score-display">
+            <span class="field-caption">COMPOSITE RISK SCORE</span>
+            <div class="score-numeric-wrap">
+              <span class="score-large" id="heroScoreValue">0</span>
+              <span class="score-denominator">/ 10+</span>
+            </div>
+            <div class="score-contributions">
+              <span id="hwScoreSubtext">HW: 0 pts</span> • 
+              <span id="wxScoreSubtext">WX: 0 pts</span>
+            </div>
+          </div>
+
+          <div class="site-metadata-display">
+            <span class="field-caption">MONITORING SITE</span>
+            <div class="site-title" id="siteLabelDisplay">IIT Bombay Hillside Station #1</div>
+            <div class="site-coords" id="siteCoordsDisplay">19.1334° N, 72.9133° E</div>
+            <div class="site-updated" id="lastUpdatedDisplay">Last Sync: —</div>
+          </div>
+        </div>
+
+        <!-- Expandable "How this score is calculated" Panel -->
+        <div class="risk-explanation-accordion">
+          <button class="accordion-toggle" id="toggleRiskDetailsBtn" type="button" aria-expanded="false" aria-controls="riskCalculationPanel">
+            <span class="toggle-icon">▶</span>
+            <strong>How This Score Is Calculated (Firmware Section 6 + Weather Forecast)</strong>
+          </button>
+
+          <div class="accordion-panel hidden" id="riskCalculationPanel">
+            <div class="formula-summary-box">
+              <p>
+                <strong>Evaluation Formula:</strong> Score combines physical geotechnical sensors (Soil Moisture tiers up to +3, Rainfall rate up to +3, MPU6050 Slope Tilt up to +3, Digital Tilt Switch +2, Vibration &gt;13 m/s² +2, Ultrasonic Displacement &gt;2 cm +2, and 1-hour sensor trends) plus up to +3 points for 6-hour upstream forecast rainfall.
+              </p>
+            </div>
+            <div class="active-notes-section">
+              <h4>Active Scoring Breakdown &amp; Factors Detected:</h4>
+              <ul class="risk-notes-list" id="riskNotesList">
+                <li class="note-empty">All sensor thresholds are within safe baseline bounds.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================================================= -->
+      <!-- SECTION: HARDWARE SETUP LOCATION & AREA DISASTER RISK     -->
+      <!-- ========================================================= -->
+      <section class="hazard-area-section" id="hazardAreaSection" aria-labelledby="hazardAreaHeading">
+        <div class="hazard-area-header">
+          <div class="header-left">
+            <span class="hazard-section-icon" aria-hidden="true">📡</span>
+            <div>
+              <h2 id="hazardAreaHeading" class="hazard-section-title">Hardware Setup Location &amp; Area Disaster Risk</h2>
+              <p class="hazard-section-desc">Physical IoT slope node coordinates, real-time debris runout radius, and threat assessment across the hazard area.</p>
+            </div>
+          </div>
+          <div class="header-right">
+            <span id="areaRiskSeverityBadge" class="status-pill status-safe">NORMAL AREA RISK</span>
+            <button id="focusHardwareAreaBtn" class="btn btn-sm btn-cyan" type="button" title="Center map and telemetry on physical hardware setup">
+              <span aria-hidden="true">🎯</span> Focus Hardware Node
+            </button>
+          </div>
+        </div>
+
+        <div class="hazard-area-grid">
+          <!-- Card 1: Hardware Setup Location -->
+          <div class="hazard-card">
+            <div class="hazard-card-head">
+              <span class="hazard-card-icon">📍</span>
+              <h4>Hardware Deployment Node</h4>
+              <span id="hwLocGpsBadge" class="mini-badge">Configured Site</span>
+            </div>
+            <div class="hazard-card-body">
+              <div class="hazard-meta-row">
+                <span class="meta-label">Coordinates:</span>
+                <strong id="hwLocCoords" class="meta-val">19.1334° N, 72.9133° E</strong>
+              </div>
+              <div class="hazard-meta-row">
+                <span class="meta-label">Elevation / Altitude:</span>
+                <span id="hwLocAltitude" class="meta-val">128 m MSL</span>
+              </div>
+              <div class="hazard-meta-row">
+                <span class="meta-label">Node Identifier:</span>
+                <code id="hwLocStationId" class="meta-val">ESP32_DEVKIT_V1</code>
+              </div>
+              <div class="hazard-meta-row">
+                <span class="meta-label">Deployment Area:</span>
+                <span id="hwLocLabel" class="meta-val">IIT Bombay Hillside Station #1</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 2: Disaster Risk Over Area -->
+          <div class="hazard-card">
+            <div class="hazard-card-head">
+              <span class="hazard-card-icon">⚠️</span>
+              <h4>Disaster Threat Over Area</h4>
+              <span id="hazardAreaZoneTag" class="mini-badge status-safe">Baseline Zone</span>
+            </div>
+            <div class="hazard-card-body">
+              <div class="hazard-meta-row">
+                <span class="meta-label">Impact Runout Radius:</span>
+                <strong id="hazardImpactRadius" class="meta-val">150 m (Baseline)</strong>
+              </div>
+              <div class="hazard-meta-row">
+                <span class="meta-label">Secondary Evac Buffer:</span>
+                <span id="hazardBufferRadius" class="meta-val">400 m</span>
+              </div>
+              <div class="hazard-meta-row">
+                <span class="meta-label">Threatened Land Area:</span>
+                <span id="hazardThreatArea" class="meta-val">0.071 km²</span>
+              </div>
+              <div class="hazard-meta-row full-width">
+                <span class="meta-label">Area Assessment:</span>
+                <p id="hazardAreaSummary" class="meta-desc">Normal geological conditions across slope installation perimeter.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 3: Proximity & Safety Advisory -->
+          <div class="hazard-card highlight-card">
+            <div class="hazard-card-head">
+              <span class="hazard-card-icon">🧭</span>
+              <h4>Your Proximity to Slope Hazard</h4>
+              <span id="userProximityBadge" class="mini-badge">Awaiting GPS</span>
+            </div>
+            <div class="hazard-card-body">
+              <div class="hazard-meta-row">
+                <span class="meta-label">Distance to Slope Node:</span>
+                <strong id="userProximityDistance" class="meta-val">—</strong>
+              </div>
+              <div class="hazard-meta-row full-width">
+                <span class="meta-label">Safety Advisory:</span>
+                <p id="userProximityAdvisory" class="meta-desc">Acquire your device GPS or click 'Use My Current Location' to calculate your real-time distance and danger zone proximity.</p>
+              </div>
+              <div class="hazard-card-actions">
+                <button id="checkMyProximityBtn" class="btn btn-sm btn-outline-cyan" type="button">
+                  <span aria-hidden="true">📍</span> Check My Distance to Hazard
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================================================= -->
+      <!-- SECTION: GEOTECHNICAL TELEMETRY SENSOR GRID               -->
+      <!-- ========================================================= -->
+      <section class="telemetry-grid" aria-label="Live Geotechnical Sensor Readings">
+        
+        <!-- Card 1: Soil Moisture -->
+        <article class="sensor-card" id="cardSoilMoisture">
+          <div class="sensor-card-header">
+            <span class="sensor-icon">🌱</span>
+            <h3 class="sensor-name">Soil Moisture</h3>
+            <span class="sensor-status-tag" id="soilStatusTag">NORMAL</span>
+          </div>
+          <div class="sensor-metric-wrap">
+            <div class="metric-primary">
+              <span class="metric-val" id="soilMoistureVal">0.0</span>
+              <span class="metric-unit">%</span>
+            </div>
+            <div class="metric-secondary">
+              Raw ADC: <span id="soilRawVal">—</span> (Capacitive)
+            </div>
+          </div>
+          <div class="sensor-bar-bg">
+            <div class="sensor-bar-fill" id="soilBarFill" style="width: 0%"></div>
+          </div>
+          <div class="sensor-footer">
+            <span class="trend-indicator" id="soilTrendVal">Trend: 0.0%/hr</span>
+            <span class="threshold-hint">&ge;60% War, &ge;80% Sat</span>
+          </div>
+          <div class="sensor-card-meta">
+            <span class="sensor-timestamp" id="soilLastUpdated">Last reading: —</span>
+          </div>
+        </article>
+
+        <!-- Card 2: Rainfall Sensor -->
+        <article class="sensor-card" id="cardRainfall">
+          <div class="sensor-card-header">
+            <span class="sensor-icon">🌧️</span>
+            <h3 class="sensor-name">Rainfall Level</h3>
+            <span class="sensor-status-tag" id="rainStatusTag">NORMAL</span>
+          </div>
+          <div class="sensor-metric-wrap">
+            <div class="metric-primary">
+              <span class="metric-val" id="rainLevelVal">0.0</span>
+              <span class="metric-unit">%</span>
+            </div>
+            <div class="metric-secondary">
+              Raw ADC: <span id="rainRawVal">—</span> (Resistance)
+            </div>
+          </div>
+          <div class="sensor-bar-bg">
+            <div class="sensor-bar-fill" id="rainBarFill" style="width: 0%"></div>
+          </div>
+          <div class="sensor-footer">
+            <span class="trend-indicator" id="rainTrendVal">Trend: 0.0%/hr</span>
+            <span class="threshold-hint">&ge;40% Mod, &ge;80% Hvy</span>
+          </div>
+          <div class="sensor-card-meta">
+            <span class="sensor-timestamp" id="rainLastUpdated">Last reading: —</span>
+          </div>
+        </article>
+
+        <!-- Card 3: Slope Tilt & Incline -->
+        <article class="sensor-card" id="cardTilt">
+          <div class="sensor-card-header">
+            <span class="sensor-icon">📐</span>
+            <h3 class="sensor-name">Slope Inclination (MPU-6050)</h3>
+            <span class="sensor-status-tag" id="tiltStatusTag">NORMAL</span>
+          </div>
+          <div class="sensor-metric-wrap">
+            <div class="metric-primary">
+              <span class="metric-val" id="tiltMaxAngleVal">0.0</span>
+              <span class="metric-unit">°</span>
+            </div>
+            <div class="metric-secondary">
+              X: <span id="tiltXVal">0.0°</span> | Y: <span id="tiltYVal">0.0°</span>
+            </div>
+          </div>
+          <div class="sensor-mini-badges">
+            <span class="mini-badge" id="tiltSwitchBadge">Tilt Switch: Open (Stable)</span>
+          </div>
+          <div class="sensor-footer">
+            <span>Mechanical Angle</span>
+            <span class="threshold-hint">&ge;10° War, &ge;20° Dan</span>
+          </div>
+          <div class="sensor-card-meta">
+            <span class="sensor-timestamp" id="tiltLastUpdated">Last reading: —</span>
+          </div>
+        </article>
+
+        <!-- Card 4: Ground Acceleration / Vibration -->
+        <article class="sensor-card" id="cardAcceleration">
+          <div class="sensor-card-header">
+            <span class="sensor-icon">⚡</span>
+            <h3 class="sensor-name">Net Vibration</h3>
+            <span class="sensor-status-tag" id="accelStatusTag">STABLE</span>
+          </div>
+          <div class="sensor-metric-wrap">
+            <div class="metric-primary">
+              <span class="metric-val" id="accelVal">9.80</span>
+              <span class="metric-unit">m/s²</span>
+            </div>
+            <div class="metric-secondary">
+              Earth Baseline: 9.81 m/s²
+            </div>
+          </div>
+          <div class="sensor-bar-bg">
+            <div class="sensor-bar-fill" id="accelBarFill" style="width: 50%"></div>
+          </div>
+          <div class="sensor-footer">
+            <span>Rockfall / Tremor</span>
+            <span class="threshold-hint">&gt;13.0 m/s² Seismic</span>
+          </div>
+          <div class="sensor-card-meta">
+            <span class="sensor-timestamp" id="accelLastUpdated">Last reading: —</span>
+          </div>
+        </article>
+
+        <!-- Card 5: Ultrasonic Ground Displacement -->
+        <article class="sensor-card" id="cardDisplacement">
+          <div class="sensor-card-header">
+            <span class="sensor-icon">📏</span>
+            <h3 class="sensor-name">Displacement (HC-SR04)</h3>
+            <span class="sensor-status-tag" id="dispStatusTag">STABLE</span>
+          </div>
+          <div class="sensor-metric-wrap">
+            <div class="metric-primary">
+              <span class="metric-val" id="displacementVal">0.00</span>
+              <span class="metric-unit">cm</span>
+            </div>
+            <div class="metric-secondary">
+              Ground Clearance: <span id="distanceVal">—</span> cm
+            </div>
+          </div>
+          <div class="sensor-bar-bg">
+            <div class="sensor-bar-fill" id="dispBarFill" style="width: 0%"></div>
+          </div>
+          <div class="sensor-footer">
+            <span id="sensorFaultBadge">Sensor: Nominal</span>
+            <span class="threshold-hint">&gt;2.0 cm Failure</span>
+          </div>
+          <div class="sensor-card-meta">
+            <span class="sensor-timestamp" id="dispLastUpdated">Last reading: —</span>
+          </div>
+        </article>
+
+        <!-- Card 6: Meteorological Forecast (Open-Meteo) -->
+        <article class="sensor-card" id="cardWeather">
+          <div class="sensor-card-header">
+            <span class="sensor-icon">⛅</span>
+            <h3 class="sensor-name">Weather &amp; Rain Forecast</h3>
+            <button id="refreshWeatherBtn" class="btn btn-xs btn-outline-cyan" type="button" title="Refresh Open-Meteo forecast">
+              🔄 Refresh
+            </button>
+          </div>
+
+          <!-- Weather Status / Notice Banner -->
+          <div id="weatherNoticeBanner" class="weather-notice-banner hidden" role="status"></div>
+
+          <div class="sensor-metric-wrap">
+            <div class="metric-primary">
+              <span class="metric-val" id="weatherMaxRainVal">0.0</span>
+              <span class="metric-unit">mm/h</span>
+            </div>
+            <div class="metric-secondary">
+              6h Forecast Max Precipitation
+            </div>
+          </div>
+
+          <div class="sensor-mini-badges">
+            <span class="mini-badge" id="weatherScoreBadge">+0 Risk Pts (Light/None)</span>
+            <span class="mini-badge" id="weatherGpsStateBadge">GPS: Connecting...</span>
+          </div>
+
+          <!-- Coordinates Used & Forecast Fetch Time Panel -->
+          <div class="weather-meta-panel" id="weatherMetaPanel">
+            <div class="weather-meta-row">
+              <span class="meta-label">Coords Used:</span>
+              <strong id="weatherCoordsUsed" class="meta-value">—</strong>
+            </div>
+            <div class="weather-meta-row">
+              <span class="meta-label">Forecast Fetched:</span>
+              <strong id="weatherFetchTime" class="meta-value">—</strong>
+            </div>
+            <div class="weather-prev-notice hidden" id="weatherPrevNotice">
+              <span id="weatherPrevNoticeText">Previously fetched for —</span>
+            </div>
+          </div>
+
+          <div class="sensor-footer">
+            <span id="weatherTimeIndicator">Current Temp: — °C</span>
+            <span class="threshold-hint">&ge;2.5mm +1, &ge;10mm +3</span>
+          </div>
+          <div class="sensor-card-meta">
+            <span class="sensor-timestamp" id="weatherLastUpdated">Last sync: —</span>
+          </div>
+        </article>
+      </section>
+
+      <!-- ========================================================= -->
+      <!-- SECTION: MAPLIBRE GL EVACUATION ROUTE & MAP               -->
+      <!-- ========================================================= -->
+      <section class="evacuation-section" id="evacuationSection" aria-labelledby="mapSectionHeading">
+        <div class="section-header-wrap">
+          <div>
+            <h2 class="section-heading" id="mapSectionHeading">🗺️ Evacuation Route &amp; Civil Shelter Map</h2>
+            <p class="section-subtext">Automated OSRM navigation path from hillside monitoring station to verified assembly shelter.</p>
+          </div>
+
+          <div class="map-toolbar">
+            <button id="toggleHazardPerimeterBtn" class="btn btn-sm btn-outline-warning" type="button" title="Toggle disaster hazard perimeter and debris runout zone circle">
+              <span aria-hidden="true">⚠️</span> Hazard Zone: ON
+            </button>
+            <button id="locateUserBtn" class="btn btn-sm btn-outline-cyan" type="button" title="Query GPS to plan route from your current device position">
+              📍 Use Device Location
+            </button>
+            <button id="toggleSatelliteBtn" class="btn btn-sm btn-secondary" type="button" title="Switch between vector street tiles and satellite imagery">
+              🛰️ Satellite View
+            </button>
+          </div>
+        </div>
+
+        <div id="geolocationStatusBanner" class="geo-status-banner hidden"></div>
+
+        <!-- Route Summary Bar -->
+        <div class="route-stats-bar">
+          <div class="stat-pill">
+            <span class="stat-label">ORIGIN:</span>
+            <strong id="routeOriginLabel">IIT Bombay Hillside Station #1</strong>
+          </div>
+          <div class="stat-pill">
+            <span class="stat-label">DESTINATION:</span>
+            <strong id="routeDestLabel">Campus Shelter</strong>
+            <span class="badge-verified" id="destVerifiedBadge">✓ VERIFIED</span>
+          </div>
+          <div class="stat-pill">
+            <span class="stat-label">DISTANCE:</span>
+            <strong id="routeDistanceDisplay">— km</strong>
+          </div>
+          <div class="stat-pill">
+            <span class="stat-label">EST. TRANSIT:</span>
+            <strong id="routeDurationDisplay">— mins</strong>
+          </div>
+          <div class="stat-pill">
+            <span class="stat-label">STATUS:</span>
+            <span id="routeStatusBadge" class="status-pill status-safe">ROUTED</span>
+          </div>
+        </div>
+
+        <!-- Interactive Map Container -->
+        <div class="map-wrapper">
+          <div id="evacuationMap" class="map-container" role="region" aria-label="Interactive evacuation route map">
+            <div class="map-loading-placeholder" id="mapLoadingPlaceholder" role="status" aria-live="polite">
+              <div class="map-placeholder-spinner">
+                <span class="indicator-dot loading"></span>
+                <span class="placeholder-msg">Loading terrain &amp; evacuation route map...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Regulatory & Safety Disclaimer -->
+        <aside class="route-disclaimer" role="note">
+          <div class="disclaimer-icon" aria-hidden="true">⚠️</div>
+          <div class="disclaimer-text">
+            <strong>Critical Evacuation Guidance:</strong> Suggested evacuation route is generated via open routing algorithms (OSRM) and indicates the nominal transit path. The designated safe destination is a verified campus civil shelter. During active slope movement or severe downpours, ground failure may obstruct roads. Always observe local physical terrain barricades and adhere to NDRF, Municipal Corporation, and local disaster authority directives.
+          </div>
+        </aside>
+      </section>
+
+      <!-- ========================================================= -->
+      <!-- SECTION: TWO-COLUMN PANEL (SMS RECIPIENT & AUDIT LOG)     -->
+      <!-- ========================================================= -->
+      <div class="management-grid">
+        
+        <!-- Column 1: SMS Emergency Recipient Form -->
+        <section class="console-panel" aria-labelledby="smsSectionHeading">
+          <div class="panel-header">
+            <h2 class="panel-title" id="smsSectionHeading">📱 Emergency SMS Alert Recipient</h2>
+            <span class="panel-badge" id="smsProviderBadge">SIMULATED SMS</span>
+          </div>
+          
+          <div class="panel-body">
+            <p class="panel-desc">
+              Register contact number for cellular SMS broadcasts triggered immediately on <span class="text-danger">DANGER</span> or <span class="text-warning">HIGH RISK</span> slope escalations.
+            </p>
+
+            <!-- Active Registered Recipient Display -->
+            <div id="activeRecipientCard" class="active-recipient-box hidden">
+              <div class="active-recip-info">
+                <div class="recip-phone" id="activeRecipPhone">+91 —</div>
+                <div class="recip-meta" id="activeRecipMeta">Consent Recorded: —</div>
+              </div>
+              <button id="deleteRecipientBtn" class="btn btn-sm btn-outline-danger" type="button">
+                🗑️ Remove Contact
+              </button>
+            </div>
+
+            <!-- Recipient Registration Form -->
+            <form id="recipientForm" class="recipient-form" novalidate>
+              <div class="form-row">
+                <div class="form-group col-cc">
+                  <label for="countryCodeInput">Country Code</label>
+                  <input type="text" id="countryCodeInput" name="countryCode" value="91" placeholder="91" maxlength="4" required>
+                </div>
+                <div class="form-group col-phone">
+                  <label for="phoneInput">Subscriber Mobile Number</label>
+                  <input type="tel" id="phoneInput" name="phone" placeholder="9876543210" required>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="recipientNotesInput">Officer / Station Notes (Optional)</label>
+                <input type="text" id="recipientNotesInput" name="notes" placeholder="e.g. Hillside Duty Officer">
+              </div>
+
+              <!-- Required Affirmative Consent Checkbox -->
+              <div class="consent-group">
+                <label class="consent-label" for="consentCheckbox">
+                  <input type="checkbox" id="consentCheckbox" name="consent" required>
+                  <span>
+                    <strong>Required Consent:</strong> I affirmatively consent to receive automated emergency SMS landslide hazard alerts on this telephone number.
+                  </span>
+                </label>
+              </div>
+
+              <div class="form-actions">
+                <button type="submit" class="btn btn-primary" id="saveRecipientBtn">
+                  Save Emergency Recipient
+                </button>
+              </div>
+            </form>
+
+            <div id="recipientFeedback" class="form-feedback hidden"></div>
+
+            <hr class="panel-divider">
+
+            <!-- Safe Test Alert Dispatcher -->
+            <div class="test-alert-box">
+              <h3>🚨 Manual Alert System Test</h3>
+              <p class="test-alert-desc">
+                Triggers a simulated test broadcast. <strong>Safety Guarantee:</strong> Always executes via the simulated in-memory provider with safe prefix <mark>[TEST — not a real emergency]</mark>.
+              </p>
+              <button id="sendTestAlertBtn" class="btn btn-outline-cyan" type="button">
+                ⚡ Send Safe Simulated Test Alert
+              </button>
+              <div id="testAlertResult" class="test-result-box hidden"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Column 2: Alert History Audit Log -->
+        <section class="console-panel" aria-labelledby="auditSectionHeading">
+          <div class="panel-header">
+            <h2 class="panel-title" id="auditSectionHeading">📋 Permanent Alert Audit Log</h2>
+            <span class="count-badge" id="auditCountBadge">0 Events</span>
+          </div>
+
+          <div class="panel-body">
+            <p class="panel-desc">
+              Immutable ledger of all emergency escalations, suppressed cooldowns, simulated tests, and recoveries. Retained indefinitely (&ge;500 entries) and never erased on recovery.
+            </p>
+
+            <div class="audit-log-container" id="auditLogContainer" role="region" aria-label="Alert Audit Log Entries">
+              <div class="empty-log-msg">Loading audit log...</div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ========================================================= -->
+      <!-- SECTION: ABOUT & 19 REGIONAL TRANSLATIONS TABLE           -->
+      <!-- ========================================================= -->
+      <section class="console-panel about-panel" id="aboutSection" aria-labelledby="aboutSectionHeading">
+        <div class="panel-header">
+          <h2 class="panel-title" id="aboutSectionHeading">🌐 Multi-Language Warning Signatures (19 Indian Regional Languages)</h2>
+          <span class="panel-badge">Life-Safety Signage</span>
+        </div>
+
+        <div class="panel-body">
+          <p class="panel-desc">
+            Geotechnical landslide hazards disproportionately impact diverse linguistically varied populations across the Western Ghats (Maharashtra, Goa, Karnataka, Kerala, Tamil Nadu), the Himalayan arc (Uttarakhand, Himachal, Sikkim, J&amp;K), and the North-Eastern hill states. During critical slope failures, warning signs must be rendered instantly in local scripts.
+          </p>
+
+          <div class="table-responsive">
+            <table class="translations-table" aria-label="Regional Indian Warning Sign Translations">
+              <thead>
+                <tr>
+                  <th scope="col">Code</th>
+                  <th scope="col">Language</th>
+                  <th scope="col">Native Name</th>
+                  <th scope="col">Script</th>
+                  <th scope="col">Dir</th>
+                  <th scope="col">Signage Translation ("EVACUATE NOW")</th>
+                  <th scope="col">Confidence</th>
+                  <th scope="col">Verification</th>
+                </tr>
+              </thead>
+              <tbody id="translationsTableBody">
+                <tr>
+                  <td colspan="8" class="text-center">Loading regional translations...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Console Footer -->
+    <footer class="console-footer" role="contentinfo">
+      <div>
+        <strong>Landslide Early-Warning System</strong> — Developed for IIT Bombay Hillside Telemetry.
+      </div>
+      <div class="footer-links">
+        <span>Hardware: ESP32 DevKit V1</span> • 
+        <span>Weather: Open-Meteo API</span> • 
+        <span>Routing: OSRM Project</span>
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- Dashboard Client Logic -->
+  <script src="app.js"></script>
+</body>
+</html>
